@@ -1,0 +1,315 @@
+{
+  "name": "RAG Agent Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "rag-query",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Query Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "webhookId": "rag-agent-webhook"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "multiplex",
+        "options": {}
+      },
+      "id": "merge-inputs",
+      "name": "Merge Query Data",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract and validate query from webhook data\nconst items = $input.all();\nconst outputItems = [];\n\nfor (const item of items) {\n  const query = item.json.query || item.json.body?.query || item.json.question;\n  \n  if (!query) {\n    throw new Error('No query provided in request');\n  }\n  \n  // Clean and prepare the query\n  const cleanedQuery = query.trim();\n  const timestamp = new Date().toISOString();\n  \n  outputItems.push({\n    json: {\n      originalQuery: query,\n      cleanedQuery: cleanedQuery,\n      timestamp: timestamp,\n      queryId: `query_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`\n    }\n  });\n}\n\nreturn outputItems;"
+      },
+      "id": "process-query",
+      "name": "Process Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $vars.VECTOR_DB_URL }}/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $vars.VECTOR_DB_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "={{ $json.cleanedQuery }}"
+            },
+            {
+              "name": "top_k",
+              "value": "5"
+            },
+            {
+              "name": "similarity_threshold",
+              "value": "0.7"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "vector-search",
+      "name": "Vector Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process vector search results and prepare context\nconst items = $input.all();\nconst outputItems = [];\n\nfor (const item of items) {\n  const searchResults = item.json.results || item.json.documents || [];\n  \n  // Extract relevant context from search results\n  const contexts = searchResults.map((result, index) => {\n    const content = result.content || result.text || result.document;\n    const score = result.score || result.similarity || 0;\n    const metadata = result.metadata || {};\n    \n    return {\n      content: content,\n      score: score,\n      source: metadata.source || `Document ${index + 1}`,\n      rank: index + 1\n    };\n  });\n  \n  // Filter by relevance threshold\n  const relevantContexts = contexts.filter(ctx => ctx.score >= 0.7);\n  \n  // Prepare context string for LLM\n  const contextString = relevantContexts\n    .map((ctx, index) => `[${index + 1}] ${ctx.content} (Source: ${ctx.source})\\n`)\n    .join('\\n');\n  \n  // Prepare sources list\n  const sources = relevantContexts.map(ctx => ({\n    source: ctx.source,\n    score: ctx.score\n  }));\n  \n  outputItems.push({\n    json: {\n      query: item.json.cleanedQuery || $('Process Query').item.json.cleanedQuery,\n      queryId: $('Process Query').item.json.queryId,\n      contextString: contextString,\n      contexts: relevantContexts,\n      sources: sources,\n      contextCount: relevantContexts.length,\n      timestamp: new Date().toISOString()\n    }\n  });\n}\n\nreturn outputItems;"
+      },
+      "id": "prepare-context",
+      "name": "Prepare Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $vars.LLM_API_URL }}/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $vars.LLM_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "{{ $vars.LLM_MODEL || 'gpt-3.5-turbo' }}"
+            },
+            {
+              "name": "messages",
+              "value": "=[\n  {\n    \"role\": \"system\",\n    \"content\": \"You are a helpful AI assistant that answers questions based on the provided context. Use only the information from the context to answer questions. If the context doesn't contain enough information to answer the question, say so clearly. Always cite your sources when possible.\"\n  },\n  {\n    \"role\": \"user\",\n    \"content\": \"Context:\\n{{ $json.contextString }}\\n\\nQuestion: {{ $json.query }}\\n\\nPlease provide a comprehensive answer based on the context above.\"\n  }\n]"
+            },
+            {
+              "name": "temperature",
+              "value": "0.7"
+            },
+            {
+              "name": "max_tokens",
+              "value": "1000"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "llm-generation",
+      "name": "LLM Generation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process LLM response and format final output\nconst items = $input.all();\nconst outputItems = [];\n\nfor (const item of items) {\n  const llmResponse = item.json;\n  const contextData = $('Prepare Context').item.json;\n  const originalQuery = $('Process Query').item.json;\n  \n  // Extract generated answer\n  const answer = llmResponse.choices?.[0]?.message?.content || \n                llmResponse.response || \n                llmResponse.text || \n                'Sorry, I could not generate a response.';\n  \n  // Calculate response metrics\n  const responseTime = new Date().getTime() - new Date(originalQuery.timestamp).getTime();\n  \n  // Format final response\n  const finalResponse = {\n    queryId: originalQuery.queryId,\n    query: originalQuery.originalQuery,\n    answer: answer,\n    sources: contextData.sources,\n    metadata: {\n      contextCount: contextData.contextCount,\n      responseTimeMs: responseTime,\n      timestamp: new Date().toISOString(),\n      model: $vars.LLM_MODEL || 'gpt-3.5-turbo'\n    },\n    confidence: contextData.contextCount > 0 ? 'high' : 'low'\n  };\n  \n  outputItems.push({\n    json: finalResponse\n  });\n}\n\nreturn outputItems;"
+      },
+      "id": "format-response",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "webhook-response",
+      "name": "Send Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1780, 300]
+    },
+    {
+      "parameters": {
+        "mode": "catchErrors",
+        "output": "extra",
+        "options": {}
+      },
+      "id": "error-handler",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [1120, 520]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Handle errors and provide meaningful error responses\nconst items = $input.all();\nconst outputItems = [];\n\nfor (const item of items) {\n  const error = item.json.error || item.json;\n  \n  const errorResponse = {\n    error: true,\n    message: 'An error occurred while processing your query',\n    details: error.message || 'Unknown error',\n    timestamp: new Date().toISOString(),\n    queryId: error.queryId || 'unknown'\n  };\n  \n  outputItems.push({\n    json: errorResponse\n  });\n}\n\nreturn outputItems;"
+      },
+      "id": "format-error",
+      "name": "Format Error Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 520]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "responseCode": "500",
+        "options": {}
+      },
+      "id": "error-response",
+      "name": "Send Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1560, 520]
+    }
+  ],
+  "connections": {
+    "Query Webhook": {
+      "main": [
+        [
+          {
+            "node": "Merge Query Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Query Data": {
+      "main": [
+        [
+          {
+            "node": "Process Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Query": {
+      "main": [
+        [
+          {
+            "node": "Vector Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vector Search": {
+      "main": [
+        [
+          {
+            "node": "Prepare Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Context": {
+      "main": [
+        [
+          {
+            "node": "LLM Generation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Generation": {
+      "main": [
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Response": {
+      "main": [
+        [
+          {
+            "node": "Send Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Handler": {
+      "main": [
+        [
+          {
+            "node": "Format Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Error Response": {
+      "main": [
+        [
+          {
+            "node": "Send Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "createdAt": "2024-12-19T10:00:00.000Z",
+  "updatedAt": "2024-12-19T10:00:00.000Z",
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "pinData": {},
+  "versionId": "1",
+  "triggerCount": 1,
+  "tags": [
+    {
+      "createdAt": "2024-12-19T10:00:00.000Z",
+      "updatedAt": "2024-12-19T10:00:00.000Z",
+      "id": "rag-agent",
+      "name": "rag-agent"
+    }
+  ]
+}
