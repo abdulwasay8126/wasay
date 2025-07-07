@@ -1,0 +1,293 @@
+{
+  "name": "RAG Customer Support Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "customer-question",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "c0b5c3e0-8f5a-4b8b-9c1d-2e3f4a5b6c7d",
+      "name": "Customer Question Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ],
+      "webhookId": "customer-question"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract and validate the customer question\nconst body = $input.first().json.body;\nconst question = body.question || body.query || body.message;\n\nif (!question) {\n  throw new Error('No question provided in request body');\n}\n\n// Clean and prepare the question\nconst cleanQuestion = question.trim();\n\nreturn {\n  question: cleanQuestion,\n  timestamp: new Date().toISOString(),\n  requestId: Math.random().toString(36).substr(2, 9)\n};"
+      },
+      "id": "d1c6d4f1-9g6b-5c9c-ad2e-3f4g5b6c7d8e",
+      "name": "Extract Question",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "indexName": "customer-support",
+        "vector": "={{ $json.questionEmbedding }}",
+        "topK": 5,
+        "includeMetadata": true,
+        "includeValues": false
+      },
+      "id": "e2d7e5f2-ah7c-6d0d-be3f-4g5h6c7d8e9f",
+      "name": "Search Vector Store",
+      "type": "n8n-nodes-base.pinecone",
+      "typeVersion": 1,
+      "position": [
+        900,
+        300
+      ],
+      "credentials": {
+        "pineconeApi": {
+          "id": "pinecone-credentials",
+          "name": "Pinecone API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "text-embedding-ada-002",
+        "input": "={{ $json.question }}"
+      },
+      "id": "f3e8f6g3-bi8d-7e1e-cf4g-5h6i7d8e9f0g",
+      "name": "Generate Question Embedding",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        680,
+        300
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credentials",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process vector search results and prepare context\nconst searchResults = $input.all();\nconst contexts = [];\n\n// Extract relevant information from search results\nfor (const result of searchResults) {\n  if (result.json.matches) {\n    for (const match of result.json.matches) {\n      if (match.score > 0.7) { // Only include high-confidence matches\n        contexts.push({\n          content: match.metadata?.content || match.metadata?.text || '',\n          source: match.metadata?.source || 'Unknown',\n          score: match.score,\n          id: match.id\n        });\n      }\n    }\n  }\n}\n\n// Sort by relevance score\ncontexts.sort((a, b) => b.score - a.score);\n\n// Combine contexts into a single string\nconst contextText = contexts\n  .slice(0, 3) // Use top 3 most relevant contexts\n  .map(ctx => `Source: ${ctx.source}\\nContent: ${ctx.content}`)\n  .join('\\n\\n---\\n\\n');\n\nreturn {\n  contexts: contexts,\n  contextText: contextText,\n  question: $('Extract Question').first().json.question,\n  requestId: $('Extract Question').first().json.requestId\n};"
+      },
+      "id": "g4f9g7h4-cj9e-8f2f-dg5h-6i7j8e9f0g1h",
+      "name": "Process Search Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4",
+        "messages": {
+          "messageValues": [
+            {
+              "role": "system",
+              "content": "You are a helpful customer support agent. Answer customer questions based on the provided context information. Be accurate, concise, and professional. If you cannot answer based on the context, say so politely and suggest contacting support directly.\n\nGuidelines:\n1. Only use information from the provided context\n2. Be specific and cite sources when possible\n3. If the context doesn't contain relevant information, acknowledge this\n4. Maintain a friendly, professional tone\n5. Provide actionable advice when possible"
+            },
+            {
+              "role": "user",
+              "content": "Context Information:\n{{ $json.contextText }}\n\n---\n\nCustomer Question: {{ $json.question }}\n\nPlease provide a helpful answer based on the context above."
+            }
+          ]
+        },
+        "temperature": 0.3,
+        "maxTokens": 500
+      },
+      "id": "h5g0h8i5-dk0f-9g3g-eh6i-7j8k9f0g1h2i",
+      "name": "Generate Response",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        300
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credentials",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format the final response\nconst response = $input.first().json;\nconst processedResults = $('Process Search Results').first().json;\n\n// Extract the generated answer\nconst answer = response.choices?.[0]?.message?.content || 'I apologize, but I was unable to generate a response at this time.';\n\n// Prepare response metadata\nconst sources = processedResults.contexts.map(ctx => ({\n  source: ctx.source,\n  relevanceScore: ctx.score\n}));\n\n// Format final response\nconst finalResponse = {\n  success: true,\n  answer: answer,\n  metadata: {\n    requestId: processedResults.requestId,\n    timestamp: new Date().toISOString(),\n    sourcesUsed: sources.length,\n    sources: sources,\n    model: 'gpt-4',\n    contextRelevance: sources.length > 0 ? 'high' : 'low'\n  }\n};\n\nreturn finalResponse;"
+      },
+      "id": "i6h1i9j6-el1g-ah4h-fi7j-8k9l0g1h2i3j",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}"
+      },
+      "id": "j7i2j0k7-fm2h-bi5i-gj8k-9l0m1h2i3j4k",
+      "name": "Return Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1780,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Error handling for the workflow\nconst error = $input.first().json;\n\nconst errorResponse = {\n  success: false,\n  error: {\n    message: error.message || 'An unexpected error occurred',\n    type: error.name || 'WorkflowError',\n    timestamp: new Date().toISOString(),\n    requestId: error.requestId || 'unknown'\n  },\n  answer: 'I apologize, but I encountered an error while processing your question. Please try again or contact support directly.'\n};\n\nreturn errorResponse;"
+      },
+      "id": "k8j3k1l8-gn3i-cj6j-hk9l-0m1n2i3j4k5l",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}"
+      },
+      "id": "l9k4l2m9-ho4j-dk7k-il0m-1n2o3j4k5l6m",
+      "name": "Return Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1780,
+        500
+      ]
+    }
+  ],
+  "connections": {
+    "Customer Question Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Question",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Question": {
+      "main": [
+        [
+          {
+            "node": "Generate Question Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Question Embedding": {
+      "main": [
+        [
+          {
+            "node": "Search Vector Store",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Vector Store": {
+      "main": [
+        [
+          {
+            "node": "Process Search Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Search Results": {
+      "main": [
+        [
+          {
+            "node": "Generate Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Response": {
+      "main": [
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Response": {
+      "main": [
+        [
+          {
+            "node": "Return Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Handler": {
+      "main": [
+        [
+          {
+            "node": "Return Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "k8j3k1l8-gn3i-cj6j-hk9l-0m1n2i3j4k5l"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "customer-support",
+      "name": "Customer Support"
+    },
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z", 
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "rag",
+      "name": "RAG"
+    }
+  ],
+  "triggerCount": 0,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1"
+}
