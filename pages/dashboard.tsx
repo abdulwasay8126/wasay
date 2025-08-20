@@ -46,25 +46,49 @@ export default function DashboardPage() {
   const content = useMemo(() => {
     if (activeTab === 'home') {
       return (
-        <div className="space-y-3">
-          <h2 className="text-lg font-semibold">Home</h2>
-          <p className="text-sm text-gray-600">Welcome to your dashboard.</p>
+        <div className="space-y-6">
+          <div>
+            <h2 className="text-xl font-semibold">Welcome 👋</h2>
+            <p className="text-sm text-gray-600">Overview of your chat activity.</p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="bg-white border rounded-xl p-4 shadow-sm">
+              <div className="text-xs text-gray-500">Total Messages</div>
+              <div className="mt-2 text-2xl font-semibold">{messages.length}</div>
+            </div>
+            <div className="bg-white border rounded-xl p-4 shadow-sm">
+              <div className="text-xs text-gray-500">Webhook</div>
+              <div className="mt-2 text-2xl font-semibold">{process.env.NEXT_PUBLIC_N8N_WEBHOOK_URL ? 'Configured' : 'Not set'}</div>
+            </div>
+            <div className="bg-white border rounded-xl p-4 shadow-sm">
+              <div className="text-xs text-gray-500">Today</div>
+              <div className="mt-2 text-2xl font-semibold">{messages.filter(m => new Date(m.timestamp).toDateString() === new Date().toDateString()).length}</div>
+            </div>
+            <div className="bg-white border rounded-xl p-4 shadow-sm">
+              <div className="text-xs text-gray-500">Bot Replies</div>
+              <div className="mt-2 text-2xl font-semibold">{messages.filter(m => m.role === 'bot').length}</div>
+            </div>
+          </div>
         </div>
       );
     }
     if (activeTab === 'settings') {
       return (
-        <div className="space-y-3">
-          <h2 className="text-lg font-semibold">Settings</h2>
-          <div className="text-sm text-gray-600">
-            <p>Webhook URL: <code className="bg-gray-100 px-1 rounded">{process.env.NEXT_PUBLIC_N8N_WEBHOOK_URL || '(not set)'}</code></p>
+        <div className="space-y-6 max-w-2xl">
+          <h2 className="text-xl font-semibold">Settings</h2>
+          <div className="bg-white border rounded-xl p-4 shadow-sm">
+            <div className="text-sm text-gray-600">Webhook URL</div>
+            <div className="mt-2 text-sm">
+              <code className="bg-gray-100 px-2 py-1 rounded break-all">{process.env.NEXT_PUBLIC_N8N_WEBHOOK_URL || '(not set)'}</code>
+            </div>
+            <p className="mt-2 text-xs text-gray-500">Change this in your environment variables and redeploy.</p>
           </div>
         </div>
       );
     }
     return (
-      <div className="flex flex-col h-[calc(100vh-6rem)] bg-white border rounded-lg shadow">
-        <div className="flex-1 overflow-y-auto p-4">
+      <div className="flex flex-col h-[calc(100vh-6rem)] bg-white border rounded-2xl shadow-sm">
+        <div className="flex-1 overflow-y-auto p-4 thin-scrollbar">
           {messages.length === 0 && (
             <div className="text-center text-gray-400 text-sm">Start the conversation…</div>
           )}
